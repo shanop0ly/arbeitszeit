@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  ARBEITSZEITRECHNER – Handy-Fassung (installierbar), Stand 01.10.2026
+  ============================================================================
+  Zweck:  Rechnet aus der Kommen-Zeit den Feierabend und die Lage der beiden
+          Pausenfenster aus. Das Tagessoll ergibt sich aus dem eingetragenen
+          Beschäftigungsumfang (Prozent, Wochen- oder Tagesstunden);
+          100 % sind 8 Std 12 Min. Pause 1: 30 Min ab 6 Std Arbeitszeit,
+          Pause 2: 15 Min ab 9 Std. Sonst nichts.
+
+  Unterschied zur Laptop-Fassung (..\Arbeitszeitrechner.html):
+  - Auf Handybedienung ausgelegt: große Tippflächen, zweispaltige Kacheln,
+    Dunkelmodus folgt beim ersten Start der Einstellung des Geräts.
+  - Lässt sich über "Zum Startbildschirm hinzufügen" wie eine App einrichten
+    und läuft danach ohne Netzverbindung. Dazu gehören manifest.webmanifest,
+    sw.js und die drei Symboldateien im selben Ordner.
+  - Der Link auf den dienstlichen Zeitnachweis (myBis) ist hier bewusst
+    NICHT enthalten – die Adresse hat auf einem privaten Gerät und auf einem
+    öffentlich erreichbaren Server nichts zu suchen.
+
+  Hinweise zur Sicherheit:
+  - Es werden keine Daten erhoben und keine übertragen: kein fetch im
+    Seitenskript, kein XMLHttpRequest, kein WebSocket, kein sendBeacon,
+    keine Zählpixel, keine Fremdbibliothek, keine Fremdschrift.
+  - Die Content-Security-Policy unten lässt ausschließlich Dateien aus
+    diesem Ordner zu ('self'). Fremde Adressen sind vollständig gesperrt.
+    frame-ancestors steht dort nicht: über ein meta-Element wirkt die
+    Angabe nicht, der Browser meldet sie nur als Fehler. Wer den Schutz
+    braucht, muss ihn am Server als Kopfzeile setzen.
+  - sw.js legt nur die sechs eigenen Dateien in den Browser-Speicher, damit
+    die App offline startet. Es ruft keine fremde Adresse auf.
+  - Gespeichert wird nur im Browser des Geräts (localStorage): zuletzt
+    eingetragene Startzeit, Beschäftigungsumfang (Modus, Wert, Arbeitstage)
+    und die Wahl hell/dunkel. Keine Cookies, keine Weitergabe.
+  - Der Quelltext ist vollständig lesbar.
+  ============================================================================
+-->
+<html lang="de" data-theme="hell">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" id="farbleiste" content="#eef2ff">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Arbeitszeit">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="symbol-192.png" type="image/png">
+<link rel="apple-touch-icon" href="symbol-192.png">
+<title>Arbeitszeitrechner</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+
+  /* ---------- helles Tag-Design (Standard) ---------- */
+  :root{
+    --bg1:#eef2ff; --bg2:#fdf2f8; --bg3:#ecfeff;
+    --blob1:#a5b4fc; --blob2:#7dd3fc; --blob3:#fbcfe8;
+    --blob-op:.55; --blob-blur:70px;
+    --card:rgba(255,255,255,.78);
+    --card-brd:rgba(15,23,42,.10);
+    --schatten:0 14px 34px rgba(30,41,59,.13);
+    --txt:#1e293b; --muted:#64748b;
+    --feld-bg:rgba(255,255,255,.9);
+    --fuell:rgba(30,41,59,.13); --fuell-kante:#334155; --fuell-glow:rgba(51,65,85,.25);
+    --spur:rgba(15,23,42,.06);
+    --gruen:#15a34a; --gelb:#d97706; --rot:#e11d48; --tuerkis:#0e7490;
+    --z1a:rgba(21,163,74,.20); --z1b:rgba(21,163,74,.42);
+    --z2a:rgba(217,119,6,.20); --z2b:rgba(217,119,6,.45);
+    --z3a:rgba(225,29,72,.30); --z3b:rgba(225,29,72,.55);
+    --z4a:rgba(14,116,144,.20); --z4b:rgba(14,116,144,.40);
+  }
+  /* ---------- dunkles Abend-Design ---------- */
+  [data-theme="dunkel"]{
+    --bg1:#1b1035; --bg2:#2b1b58; --bg3:#123a52;
+    --blob1:#7c3aed; --blob2:#0ea5e9; --blob3:#ec4899;
+    --blob-op:.42;
+    --card:rgba(255,255,255,.09);
+    --card-brd:rgba(255,255,255,.18);
+    --schatten:0 18px 45px rgba(0,0,0,.30);
+    --txt:#f3f0ff; --muted:#b9b2d8;
+    --feld-bg:rgba(0,0,0,.28);
+    --fuell:rgba(255,255,255,.26); --fuell-kante:#ffffff; --fuell-glow:rgba(255,255,255,.5);
+    --spur:rgba(0,0,0,.30);
+    --gruen:#4ade80; --gelb:#fbbf24; --rot:#fb7185; --tuerkis:#38e0d0;
+    --z1a:rgba(74,222,128,.28); --z1b:rgba(74,222,128,.55);
+    --z2a:rgba(251,191,36,.30); --z2b:rgba(251,191,36,.58);
+    --z3a:rgba(251,113,133,.40); --z3b:rgba(251,113,133,.68);
+    --z4a:rgba(56,224,208,.25); --z4b:rgba(56,224,208,.50);
+  }
+
+  /* Nur das Wurzelelement bekommt eine feste Höhe. Bekäme sie auch der
+     Körper, säße der Inhalt auf dem Handy in einem 100%-hohen Kasten fest
+     und ließe sich nicht mehr nach unten schieben. */
+  html{height:100%;}
+  body{
+    margin:0;
+    padding:calc(clamp(10px,2.2vh,22px) + env(safe-area-inset-top)) 16px
+            calc(clamp(10px,2vh,20px) + env(safe-area-inset-bottom));
+    min-height:100dvh;
+    display:flex; align-items:center; justify-content:center;
+    font-family:"Segoe UI Variable Display","Segoe UI",system-ui,-apple-system,"Roboto",sans-serif;
+    color:var(--txt);
+    background:linear-gradient(135deg,var(--bg1),var(--bg2) 45%,var(--bg3));
+    background-attachment:fixed;
+    overflow-x:hidden;
+    -webkit-tap-highlight-color:transparent;
+    -webkit-text-size-adjust:100%;
+    transition:color .35s;
+  }
+  .blob{position:fixed;border-radius:50%;filter:blur(var(--blob-blur));opacity:var(--blob-op);z-index:0;pointer-events:none;transition:background .45s,opacity .45s;}
+  .b1{width:420px;height:420px;background:var(--blob1);top:-140px;left:-120px;animation:drift 22s ease-in-out infinite;}
+  .b2{width:360px;height:360px;background:var(--blob2);bottom:-130px;right:-100px;animation:drift 27s ease-in-out infinite reverse;}
+  .b3{width:300px;height:300px;background:var(--blob3);top:45%;right:12%;animation:drift 33s ease-in-out infinite;}
+  @keyframes drift{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(60px,-45px) scale(1.15)}}
+
+  .app{position:relative;z-index:1;width:100%;max-width:880px;margin:0 auto;}
+  header{text-align:center;margin-bottom:clamp(10px,1.8vh,18px);position:relative;}
+  h1{font-size:clamp(23px,3.6vh,38px);margin:0 0 4px;letter-spacing:-.5px;}
+  h1 .uhr{display:inline-block;animation:tick 2.4s ease-in-out infinite;}
+  @keyframes tick{0%,100%{transform:rotate(-9deg)}50%{transform:rotate(9deg)}}
+  header p{margin:0;color:var(--muted);font-size:clamp(12.5px,1.6vh,15px);}
+  #theme{
+    position:absolute;top:0;right:0;width:44px;height:44px;padding:0;font-size:18px;line-height:1;
+    border-radius:50%;background:var(--card);border:1px solid var(--card-brd);color:var(--txt);
+    box-shadow:var(--schatten);backdrop-filter:blur(10px);cursor:pointer;
+  }
+
+  .karte{
+    background:var(--card);border:1px solid var(--card-brd);
+    border-radius:20px;padding:clamp(11px,1.7vh,17px);backdrop-filter:blur(14px);
+    box-shadow:var(--schatten);
+    transition:background .35s,border-color .35s;
+  }
+  .eingabe{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;justify-content:center;margin-bottom:clamp(10px,1.8vh,18px);}
+  .feld{display:flex;flex-direction:column;gap:5px;}
+  .feld label{font-size:12px;letter-spacing:.7px;text-transform:uppercase;color:var(--muted);}
+  input[type=time]{
+    font-family:inherit;font-size:clamp(26px,4vh,38px);font-weight:600;letter-spacing:1px;
+    padding:5px 14px;border-radius:14px;color:var(--txt);
+    background:var(--feld-bg);border:2px solid var(--card-brd);outline:none;
+    transition:border-color .2s, box-shadow .2s;
+  }
+  input[type=time]:focus{border-color:var(--tuerkis);box-shadow:0 0 0 4px color-mix(in srgb,var(--tuerkis) 22%,transparent);}
+  [data-theme="dunkel"] input[type=time]::-webkit-calendar-picker-indicator{filter:invert(1);}
+  input[type=time]::-webkit-calendar-picker-indicator{opacity:.55;cursor:pointer;}
+  button{
+    font-family:inherit;font-size:15px;font-weight:600;cursor:pointer;
+    padding:10px 16px;border-radius:14px;border:1px solid transparent;
+    min-height:44px;
+    background:linear-gradient(135deg,#6d5cf6,#2f7ce4);color:#fff;
+    box-shadow:0 8px 20px rgba(70,80,200,.28);
+    transition:transform .15s, filter .15s;
+  }
+  button:active{transform:translateY(0) scale(.97);}
+  /* Schwebe-Effekte nur dort, wo es einen Mauszeiger gibt – auf dem Handy
+     würden sie nach dem Antippen hängen bleiben. */
+  @media (hover:hover){
+    button:hover{transform:translateY(-2px);filter:brightness(1.1);}
+    #theme:hover{transform:rotate(-18deg) scale(1.08);filter:none;}
+    .kachel:hover{transform:translateY(-4px);}
+    .segment button:hover{transform:none;filter:none;background:var(--card);color:var(--txt);}
+    .info summary:hover{color:var(--tuerkis);}
+  }
+
+  [hidden]{display:none !important;}
+  #einrichten{
+    display:block;margin:0 auto clamp(10px,1.8vh,18px);font-size:14.5px;
+    background:var(--card);border:1px solid var(--card-brd);color:var(--txt);
+    box-shadow:var(--schatten);backdrop-filter:blur(10px);
+  }
+  .umfang{
+    display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;
+    width:100%;margin-top:9px;padding-top:9px;border-top:1px solid var(--card-brd);
+  }
+  .umfang > label{font-size:12px;letter-spacing:.7px;text-transform:uppercase;color:var(--muted);}
+  .segment{display:inline-flex;gap:3px;padding:3px;border-radius:12px;background:var(--feld-bg);border:1px solid var(--card-brd);}
+  .segment button{
+    font-size:12.5px;font-weight:600;padding:6px 10px;border-radius:9px;min-height:38px;
+    background:transparent;color:var(--muted);box-shadow:none;border:none;
+  }
+  .segment button.an{background:linear-gradient(135deg,#6d5cf6,#2f7ce4);color:#fff;}
+  .zahl{
+    font-family:inherit;font-size:16px;font-weight:600;width:84px;text-align:center;
+    padding:6px 9px;border-radius:11px;color:var(--txt);
+    background:var(--feld-bg);border:2px solid var(--card-brd);outline:none;
+  }
+  .zahl:focus{border-color:var(--tuerkis);}
+  .zahl.falsch{border-color:var(--rot);}
+  .zahl.klein{width:52px;}
+  .umfang span{font-size:13px;color:var(--muted);}
+  #tagessoll b{color:var(--txt);font-size:14px;}
+
+  .kacheln{display:grid;grid-template-columns:repeat(auto-fit,minmax(195px,1fr));gap:clamp(10px,1.6vh,16px);margin-bottom:clamp(10px,1.8vh,18px);}
+  .kachel{
+    background:var(--card);border:1px solid var(--card-brd);border-radius:18px;
+    padding:clamp(10px,1.6vh,15px);backdrop-filter:blur(14px);text-align:center;
+    box-shadow:var(--schatten);transition:transform .2s,background .35s;
+  }
+  .kachel .icon{font-size:clamp(17px,2.4vh,23px);display:block;margin-bottom:0;}
+  .kachel .titel{font-size:11.5px;letter-spacing:1.1px;text-transform:uppercase;color:var(--muted);}
+  .kachel .wert{font-size:clamp(24px,4vh,34px);font-weight:700;margin:3px 0 3px;font-variant-numeric:tabular-nums;}
+  .kachel .zusatz{font-size:11.5px;color:var(--muted);line-height:1.35;min-height:4.2em;}
+  .k-ende .wert{color:var(--gruen);}
+  .k-pause .wert{color:var(--rot);font-size:clamp(17px,2.7vh,23px);}
+  .k-rest .wert{color:var(--tuerkis);}
+  .kachel.grau{opacity:.5;}
+  .kachel.grau .wert{color:var(--muted);}
+  .k-pause.aktiv{animation:puls 1.6s ease-in-out infinite;}
+  @keyframes puls{0%,100%{box-shadow:var(--schatten);}50%{box-shadow:0 0 0 5px color-mix(in srgb,var(--rot) 26%,transparent);}}
+
+  .balken-box{margin-bottom:clamp(10px,1.8vh,18px);}
+  .balken{position:relative;height:22px;border-radius:11px;overflow:hidden;background:var(--spur);border:1px solid var(--card-brd);}
+  #zonen{position:absolute;inset:0;}
+  .zone{position:absolute;top:0;bottom:0;}
+  .zn-g{background:linear-gradient(90deg,var(--z1a),var(--z1b));}
+  .zn-y{background:linear-gradient(90deg,var(--z2a),var(--z2b));}
+  .zn-r{background:linear-gradient(90deg,var(--z3a),var(--z3b));}
+  .fuell{position:absolute;top:0;bottom:0;left:0;background:var(--fuell);
+         border-right:3px solid var(--fuell-kante);transition:width .6s linear;
+         box-shadow:0 0 16px var(--fuell-glow);}
+  .ticks{position:relative;height:50px;margin-top:4px;font-size:10.5px;color:var(--muted);}
+  .tick{position:absolute;top:0;transform:translateX(-50%);text-align:center;white-space:nowrap;line-height:1.25;}
+  .tick.unten{top:25px;}
+  .tick b{display:block;color:var(--txt);font-size:12px;}
+  .tick.unten b{color:var(--rot);}
+  .legende{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;margin-top:2px;font-size:12.5px;color:var(--muted);}
+  .legende span::before{content:"";display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:-1px;}
+  .lg-g::before{background:var(--gruen);} .lg-y::before{background:var(--gelb);}
+  .lg-r::before{background:var(--rot);} .lg-t::before{background:var(--tuerkis);}
+
+  .info{font-size:12.6px;line-height:1.5;color:var(--muted);}
+  .info b{color:var(--txt);}
+  .info .tipp{font-size:13px;}
+  .info summary{cursor:pointer;margin-top:8px;font-weight:700;color:var(--txt);font-size:12.5px;}
+  .info ul{margin:6px 0 0;padding-left:18px;}
+  .info li + li{margin-top:3px;}
+  .signatur{text-align:center;margin-top:10px;font-size:11px;letter-spacing:.6px;color:var(--muted);opacity:.7;}
+
+  .konfetti{position:fixed;top:-40px;font-size:24px;z-index:5;pointer-events:none;animation:fall linear forwards;}
+  @keyframes fall{to{transform:translateY(105vh) rotate(540deg);opacity:.1;}}
+
+  /* ---------- Handy ---------- */
+  @media (max-width:700px){
+    /* oben beginnen statt mittig – sonst schneidet der Browser bei langem
+       Inhalt den Kopf ab und man kommt nicht mehr heran */
+    body{align-items:flex-start;}
+  }
+  @media (max-width:560px){
+    h1{font-size:21px;padding:0 50px;}
+    /* Die lange Unterzeile würde zweizeilig unter den Hell/Dunkel-Knopf
+       laufen. Auf dem Handy bleibt nur der kurze Kern stehen; alles
+       Weitere steht ohnehin unten unter "So wird gerechnet". */
+    header p{font-size:11.5px;}
+    .nurBreit{display:none;}
+    #theme{width:42px;height:42px;font-size:17px;}
+    input[type=time]{font-size:30px;}
+    .eingabe{gap:10px;}
+    .umfang{gap:8px;}
+    /* zweispaltig, und die beiden wichtigsten Zahlen nach oben */
+    .kacheln{grid-template-columns:1fr 1fr;gap:10px;}
+    .k-ende{order:1;} .k-rest{order:2;} #kachel1{order:3;} #kachel2{order:4;}
+    .kachel{padding:10px 8px;}
+    .kachel .wert{font-size:26px;}
+    .k-pause .wert{font-size:15px;}
+    .k-rest .wert{font-size:24px;}
+    .kachel .zusatz{font-size:10.5px;min-height:0;margin-top:2px;}
+    /* Die Pausenzeiten stehen schon in den Kacheln – am Zeitstrahl würden
+       sich die Beschriftungen auf dieser Breite überlappen. */
+    .ticks{height:26px;}
+    .tick.unten{display:none;}
+    .tick b{font-size:11px;}
+    .legende{gap:10px;font-size:11px;}
+  }
+  @media (prefers-reduced-motion: reduce){
+    .blob,h1 .uhr,.k-pause.aktiv,.konfetti{animation:none !important;}
+    .fuell{transition:none;}
+  }
+</style>
+</head>
+<body>
+<div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+
+<div class="app">
+  <header>
+    <button id="theme" title="Hell / Dunkel umschalten">&#9728;&#65039;</button>
+    <h1><span class="uhr">&#9201;&#65039;</span> Arbeitszeitrechner</h1>
+    <p><span class="nurBreit">Tagessoll aus Prozent oder Stunden &middot; </span>30 Min Pause ab 6 Std<span class="nurBreit"> &middot; weitere 15 Min ab 9 Std</span></p>
+  </header>
+
+  <button id="einrichten" hidden>&#128241; Auf dem Startbildschirm einrichten</button>
+
+  <div class="karte eingabe">
+    <div class="feld">
+      <label for="start">Arbeitsbeginn</label>
+      <input type="time" id="start" value="07:00">
+    </div>
+    <button id="jetzt">&#128340; Jetzt</button>
+
+    <div class="umfang">
+      <label for="wert">Arbeitszeit</label>
+      <div class="segment" id="modus">
+        <button type="button" data-modus="prozent" class="an">Prozent</button>
+        <button type="button" data-modus="woche">Std./Woche</button>
+        <button type="button" data-modus="tag">Std./Tag</button>
+      </div>
+      <input type="text" id="wert" class="zahl" inputmode="decimal" value="100" aria-label="Beschäftigungsumfang">
+      <span id="einheit">%</span>
+      <span id="tageBox" hidden>auf <input type="text" id="tage" class="zahl klein" inputmode="numeric" value="5" aria-label="Arbeitstage pro Woche"> Tage</span>
+      <span id="tagessoll">&nbsp;</span>
+    </div>
+  </div>
+
+  <div class="kacheln">
+    <div class="kachel k-ende">
+      <span class="icon">&#127937;</span>
+      <div class="titel">Feierabend</div>
+      <div class="wert" id="ende">--:--</div>
+      <div class="zusatz" id="endeZusatz">&nbsp;</div>
+    </div>
+    <div class="kachel k-pause" id="kachel1">
+      <span class="icon">&#9749;</span>
+      <div class="titel">1. Pause</div>
+      <div class="wert" id="pause1">--:-- &ndash; --:--</div>
+      <div class="zusatz" id="pause1Zusatz">&nbsp;</div>
+    </div>
+    <div class="kachel k-pause" id="kachel2">
+      <span class="icon">&#127861;</span>
+      <div class="titel">2. Pause</div>
+      <div class="wert" id="pause2">--:-- &ndash; --:--</div>
+      <div class="zusatz" id="pause2Zusatz">&nbsp;</div>
+    </div>
+    <div class="kachel k-rest">
+      <span class="icon">&#8987;</span>
+      <div class="titel">Noch zu tun</div>
+      <div class="wert" id="rest">--:--</div>
+      <div class="zusatz" id="restZusatz">&nbsp;</div>
+    </div>
+  </div>
+
+  <div class="karte balken-box">
+    <div class="balken">
+      <div id="zonen"></div>
+      <div class="fuell" id="fuell" style="width:0%"></div>
+    </div>
+    <div class="ticks">
+      <div class="tick" id="tickStart"><b>--:--</b>Start</div>
+      <div class="tick" id="tickEnde"><b>--:--</b>Feierabend</div>
+      <div class="tick unten" id="tickP1"><b>--:--</b>1. Pause</div>
+      <div class="tick unten" id="tickP2"><b>--:--</b>2. Pause</div>
+    </div>
+    <div class="legende">
+      <span class="lg-g">Arbeitszeit bis zum Soll</span>
+      <span class="lg-r">Pause (30 bzw. 15 Min)</span>
+      <span class="lg-y">&Uuml;berstunden</span>
+    </div>
+  </div>
+
+  <div class="karte info">
+    <div class="tipp" id="tippZeile">&nbsp;</div>
+    <details>
+    <summary>So wird gerechnet</summary>
+    <ul>
+      <li><b>Tagessoll:</b> 100 % sind 8 Std 12 Min am Tag (41 Std auf 5 Tage). Teilzeit als Prozentsatz, als Wochenstunden samt Zahl der Arbeitstage oder direkt als Tagesstunden eintragen.</li>
+      <li><b>Erste Pause:</b> Sobald <b>6 Std</b> Arbeitszeit erreicht sind, laufen die n&auml;chsten <b>30 Minuten</b> als Pause. Wer h&ouml;chstens 6 Std am Tag arbeitet, bekommt nichts abgezogen.</li>
+      <li><b>Zweite Pause:</b> Ab <b>9 Std</b> Arbeitszeit &ndash; also 9 Std 30 Min Anwesenheit &ndash; folgen weitere <b>15 Minuten</b>. In beiden Fenstern w&auml;chst das Zeitkonto nicht, danach z&auml;hlt wieder jede Minute.</li>
+    </ul>
+    </details>
+  </div>
+
+  <div class="signatur">&copy; by L.K.</div>
+</div>
+
+
+<script>
+(function(){
+  var VOLLZEIT_TAG = 8*60 + 12;   // 100 % = 8 Std 12 Min am Tag (41 Std auf 5 Tage)
+  var GRENZE1 = 6*60;             // ab 6 Std Arbeitszeit läuft die erste Pause
+  var PAUSE1  = 30;
+  var GRENZE2 = 9*60;             // ab 9 Std Arbeitszeit läuft die zweite Pause
+  var PAUSE2  = 15;
+
+  // Pausenfenster, gemessen an der Anwesenheit – unabhängig vom Tagessoll
+  var P1_VON = GRENZE1,          P1_BIS = GRENZE1 + PAUSE1;          // 6:00 – 6:30
+  var P2_VON = GRENZE2 + PAUSE1, P2_BIS = P2_VON + PAUSE2;           // 9:30 – 9:45
+
+  function $(id){ return document.getElementById(id); }
+  var startEl = $('start'), wertEl = $('wert'), tageEl = $('tage');
+  var modus = 'prozent';
+  var skala = 11*60;              // Breite des Zeitstrahls, richtet sich nach dem Tagessoll
+
+  function padd(n){ return (n < 10 ? '0' : '') + n; }
+
+  function uhr(min){
+    var tage = Math.floor(min / 1440);
+    var m = ((min % 1440) + 1440) % 1440;
+    return padd(Math.floor(m/60)) + ':' + padd(m%60) + (tage > 0 ? ' (+1 Tag)' : '');
+  }
+
+  function dauer(min){
+    min = Math.max(0, Math.round(min));
+    return Math.floor(min/60) + ' Std ' + padd(min%60) + ' Min';
+  }
+
+  function countdown(sek){
+    sek = Math.max(0, Math.round(sek));
+    var h = Math.floor(sek/3600), m = Math.floor((sek%3600)/60), s = sek%60;
+    return h + ':' + padd(m) + ':' + padd(s);
+  }
+
+  function parseZeit(v){
+    var m = /^(\d{1,2}):(\d{2})/.exec(v || '');
+    if(!m) return null;
+    var h = +m[1], mi = +m[2];
+    if(h > 23 || mi > 59) return null;
+    return h*60 + mi;
+  }
+
+  /* Gutgeschriebene Arbeitszeit aus der Anwesenheit.
+     Zwei Plateaus: sobald 6 Std Arbeitszeit erreicht sind, laufen 30 Min Pause,
+     ab 9 Std weitere 15 Min. In diesen Fenstern steht das Zeitkonto still. */
+  function netto(anwesend){
+    if(anwesend <= P1_VON) return Math.max(0, anwesend);
+    if(anwesend <= P1_BIS) return GRENZE1;
+    if(anwesend <= P2_VON) return anwesend - PAUSE1;
+    if(anwesend <= P2_BIS) return GRENZE2;
+    return anwesend - PAUSE1 - PAUSE2;
+  }
+
+  // Umkehrung: nötige Anwesenheit für ein Tagessoll. Bis 6 Std ohne jeden Abzug.
+  function anwesenheitFuer(soll){
+    if(soll <= GRENZE1) return soll;
+    if(soll <= GRENZE2) return soll + PAUSE1;
+    return soll + PAUSE1 + PAUSE2;
+  }
+
+  function inPause(anwesend){
+    return (anwesend > P1_VON && anwesend <= P1_BIS) || (anwesend > P2_VON && anwesend <= P2_BIS);
+  }
+
+  function pos(min){ return Math.max(0, Math.min(100, min / skala * 100)); }
+
+  // Zahl aus dem Eingabefeld: "6,5", "6.5" und "6:30" sind erlaubt.
+  function zahl(v){
+    v = (v || '').trim().replace(',', '.');
+    var m = /^(\d{1,2}):([0-5]\d)$/.exec(v);
+    if(m) return +m[1] + (+m[2]) / 60;
+    if(!/^\d{1,3}(\.\d{1,2})?$/.test(v)) return null;
+    var z = parseFloat(v);
+    return isNaN(z) ? null : z;
+  }
+
+  // Tagessoll in Minuten aus der aktuellen Eingabe, oder null bei Unsinn.
+  function tagessoll(){
+    var w = zahl(wertEl.value);
+    if(w === null || w <= 0) return null;
+    var min;
+    if(modus === 'prozent'){
+      if(w > 100) return null;
+      min = VOLLZEIT_TAG * w / 100;
+    } else if(modus === 'woche'){
+      var t = zahl(tageEl.value);
+      if(t === null || t < 1 || t > 7) return null;
+      if(w > 60) return null;
+      min = w * 60 / t;
+    } else {
+      if(w > 12) return null;
+      min = w * 60;
+    }
+    min = Math.round(min);
+    return (min > 0 && min <= 12*60) ? min : null;
+  }
+
+  // Stunden als "41" oder "8:12"
+  function stdText(min){
+    min = Math.round(min);
+    return Math.floor(min/60) + (min % 60 ? ':' + padd(min % 60) : '');
+  }
+
+  var konfettiGezeigt = false;
+  function konfetti(){
+    if(konfettiGezeigt) return;
+    konfettiGezeigt = true;
+    var zeichen = ['🎉','🎊','✨','🏁','⭐'];
+    for(var i = 0; i < 26; i++){
+      (function(n){
+        setTimeout(function(){
+          var el = document.createElement('div');
+          el.className = 'konfetti';
+          el.textContent = zeichen[Math.floor(Math.random()*zeichen.length)];
+          el.style.left = (Math.random()*100) + 'vw';
+          el.style.animationDuration = (3 + Math.random()*2.5) + 's';
+          document.body.appendChild(el);
+          setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); }, 6500);
+        }, n*90);
+      })(i);
+    }
+  }
+
+  function leeranzeige(meldung){
+    $('ende').textContent = '--:--';
+    $('pause1').textContent = '--:-- – --:--';
+    $('pause2').textContent = '--:-- – --:--';
+    $('rest').textContent = '--:--';
+    $('endeZusatz').textContent = '';
+    $('pause1Zusatz').textContent = '';
+    $('pause2Zusatz').textContent = '';
+    $('restZusatz').textContent = meldung;
+    $('zonen').innerHTML = '';
+    $('fuell').style.width = '0%';
+  }
+
+  // Farbige Abschnitte des Zeitstrahls aus den Schnittpunkten des Tages
+  function zonenZeichnen(anwSoll){
+    var punkte = [0, P1_VON, P1_BIS, P2_VON, P2_BIS, anwSoll, skala]
+      .filter(function(p){ return p >= 0 && p <= skala; })
+      .sort(function(a,b){ return a-b; });
+    var html = '', i;
+    for(i = 0; i < punkte.length - 1; i++){
+      var von = punkte[i], bis = punkte[i+1];
+      if(bis <= von) continue;
+      var mitte = (von + bis) / 2;
+      var klasse = inPause(mitte) ? 'zn-r' : (mitte < anwSoll ? 'zn-g' : 'zn-y');
+      html += '<div class="zone ' + klasse + '" style="left:' + pos(von) + '%;width:' + (pos(bis) - pos(von)) + '%"></div>';
+    }
+    $('zonen').innerHTML = html;
+  }
+
+  function pauseKachel(nr, start, von, bis, anwSoll, laeuft){
+    var kachel = $('kachel' + nr), grenze = (nr === 1 ? GRENZE1 : GRENZE2), minuten = (nr === 1 ? PAUSE1 : PAUSE2);
+    var faelltAn = anwSoll > von;
+    $('pause' + nr).textContent = uhr(start + von) + ' – ' + uhr(start + bis);
+    $('pause' + nr + 'Zusatz').textContent = faelltAn
+      ? 'Diese ' + minuten + ' Minuten laufen als Pause – das Zeitkonto bleibt bei ' + dauer(grenze) + ' stehen und zählt ab ' + uhr(start + bis) + ' weiter.'
+      : 'Fällt bei deinem Tagessoll nicht an – greift nur, wenn du über ' + dauer(grenze) + ' hinaus bleibst.';
+    kachel.classList.toggle('grau', !faelltAn);
+    kachel.classList.toggle('aktiv', laeuft);
+  }
+
+  function rechne(){
+    var start = parseZeit(startEl.value);
+    var soll = tagessoll();
+
+    wertEl.classList.toggle('falsch', soll === null);
+    tageEl.classList.toggle('falsch', modus === 'woche' && soll === null);
+
+    if(soll === null){
+      $('tagessoll').textContent = 'Wert bitte prüfen';
+      leeranzeige('Beschäftigungsumfang bitte prüfen');
+      return;
+    }
+    $('tagessoll').innerHTML = 'Tagessoll <b>' + dauer(soll) + '</b>';
+
+    if(start === null){
+      leeranzeige('Bitte eine gültige Uhrzeit eingeben');
+      return;
+    }
+
+    try {
+      localStorage.setItem('azr-start', startEl.value);
+      localStorage.setItem('azr-wert', wertEl.value);
+      localStorage.setItem('azr-tage', tageEl.value);
+    } catch(e){}
+
+    var anwSoll = anwesenheitFuer(soll);
+    var ende = start + anwSoll;
+    skala = Math.min(12*60, Math.max(7*60, anwSoll + 120));
+
+    $('ende').textContent = uhr(ende);
+    $('endeZusatz').textContent = dauer(anwSoll) + ' Anwesenheit für ' + dauer(soll) + ' netto'
+      + (anwSoll === soll ? ' – ohne Pausenabzug' : ' (' + (anwSoll - soll) + ' Min Pause)');
+
+    zonenZeichnen(anwSoll);
+
+    var ts = $('tickStart');
+    ts.style.left = '0%'; ts.style.transform = 'translateX(0)'; ts.style.textAlign = 'left';
+    ts.innerHTML = '<b>' + uhr(start) + '</b>Start';
+    $('tickEnde').style.left = pos(anwSoll) + '%';
+    $('tickEnde').innerHTML = '<b>' + uhr(ende) + '</b>Feierabend';
+
+    var t1 = $('tickP1'), t2 = $('tickP2');
+    t1.hidden = P1_VON >= skala;
+    t1.style.left = pos((P1_VON + P1_BIS) / 2) + '%';
+    t1.innerHTML = '<b>' + uhr(start + P1_VON) + ' – ' + uhr(start + P1_BIS) + '</b>1. Pause';
+    t2.hidden = P2_VON >= skala;
+    t2.style.left = pos((P2_VON + P2_BIS) / 2) + '%';
+    t2.innerHTML = '<b>' + uhr(start + P2_VON) + ' – ' + uhr(start + P2_BIS) + '</b>2. Pause';
+
+    // Live-Stand
+    var jetzt = new Date();
+    var jetztSek = jetzt.getHours()*3600 + jetzt.getMinutes()*60 + jetzt.getSeconds();
+    var verstrichen = jetztSek - start*60;
+    if(verstrichen < -12*3600) verstrichen += 24*3600;   // Schicht über Mitternacht
+
+    var anwesendMin = Math.max(0, verstrichen) / 60;
+    var inP1 = verstrichen >= 0 && anwesendMin > P1_VON && anwesendMin <= P1_BIS;
+    var inP2 = verstrichen >= 0 && anwesendMin > P2_VON && anwesendMin <= P2_BIS;
+
+    pauseKachel(1, start, P1_VON, P1_BIS, anwSoll, inP1);
+    pauseKachel(2, start, P2_VON, P2_BIS, anwSoll, inP2);
+
+    if(verstrichen < 0){
+      $('rest').textContent = dauer(anwSoll);
+      $('restZusatz').textContent = 'Der Start liegt noch vor dir – geplante Anwesenheit';
+      $('fuell').style.width = '0%';
+      $('tippZeile').innerHTML = tipp(start, anwSoll, 0, false, false);
+      return;
+    }
+
+    var restSek = anwSoll*60 - verstrichen;
+    var nettoMin = netto(anwesendMin);
+
+    $('fuell').style.width = pos(anwesendMin) + '%';
+
+    if(restSek > 0){
+      $('rest').textContent = countdown(restSek);
+      $('restZusatz').textContent = (inP1 || inP2)
+        ? 'Pause läuft – das Konto steht bei ' + dauer(nettoMin)
+        : 'Bereits ' + dauer(nettoMin) + ' netto auf dem Konto';
+    } else {
+      $('rest').textContent = 'Feierabend!';
+      var plus = nettoMin - soll;
+      $('restZusatz').textContent = 'Netto ' + dauer(nettoMin) + ' · ' + (plus < 0 ? '−' : '+') + dauer(Math.abs(plus)) + ' zur Sollzeit';
+      konfetti();
+    }
+
+    $('tippZeile').innerHTML = tipp(start, anwSoll, anwesendMin, inP1, inP2);
+  }
+
+  function tipp(start, anwSoll, anwesendMin, inP1, inP2){
+    if(inP1) return 'Die erste Pause läuft – bis <b>' + uhr(start + P1_BIS) + '</b> bleibt das Konto bei ' + dauer(GRENZE1) + ' stehen.';
+    if(inP2) return 'Die zweite Pause läuft – bis <b>' + uhr(start + P2_BIS) + '</b> bleibt das Konto bei ' + dauer(GRENZE2) + ' stehen.';
+    if(anwSoll <= P1_VON) return 'Bei diesem Tagessoll fällt keine Pause an – Feierabend ist genau <b>' + dauer(anwSoll) + '</b> nach dem Start.';
+    if(anwesendMin <= P1_VON) return 'Erste Pause von <b>' + uhr(start + P1_VON) + '</b> bis <b>' + uhr(start + P1_BIS) + '</b> – in dieser halben Stunde wächst das Konto nicht.';
+    if(anwesendMin <= P2_VON) return 'Wer bis <b>' + uhr(start + P2_VON) + '</b> bleibt, hat ' + dauer(GRENZE2) + ' netto; danach läuft bis ' + uhr(start + P2_BIS) + ' die zweite Pause.';
+    return 'Beide Pausen sind durch – seit <b>' + uhr(start + P2_BIS) + '</b> zählt wieder jede Minute (45 Min Pause gesamt).';
+  }
+
+  // Hell / Dunkel. Die Leiste oben am Handy bekommt die passende Farbe.
+  var themeBtn = $('theme'), farbleiste = $('farbleiste');
+  function setTheme(t){
+    document.documentElement.setAttribute('data-theme', t);
+    themeBtn.innerHTML = (t === 'hell') ? '&#9728;&#65039;' : '&#127769;';
+    if(farbleiste) farbleiste.setAttribute('content', t === 'hell' ? '#eef2ff' : '#1b1035');
+    try { localStorage.setItem('azr-theme', t); } catch(e){}
+  }
+  themeBtn.addEventListener('click', function(){
+    setTheme(document.documentElement.getAttribute('data-theme') === 'hell' ? 'dunkel' : 'hell');
+  });
+
+  $('jetzt').addEventListener('click', function(){
+    var d = new Date();
+    startEl.value = padd(d.getHours()) + ':' + padd(d.getMinutes());
+    konfettiGezeigt = false;
+    rechne();
+  });
+  startEl.addEventListener('input', function(){ konfettiGezeigt = false; rechne(); });
+
+  // Beschäftigungsumfang: Prozent, Wochen- oder Tagesstunden
+  function setModus(m){
+    modus = m;
+    [].forEach.call($('modus').querySelectorAll('button'), function(b){
+      b.classList.toggle('an', b.getAttribute('data-modus') === m);
+    });
+    $('einheit').textContent = (m === 'prozent') ? '%' : 'Std.';
+    $('tageBox').hidden = (m !== 'woche');
+    try { localStorage.setItem('azr-modus', m); } catch(e){}
+  }
+
+  // Beim Umschalten den bisherigen Tagessoll in die neue Einheit übertragen
+  function wertUmrechnen(neu, soll){
+    if(soll === null) return null;
+    if(neu === 'prozent') return String(Math.round(soll / VOLLZEIT_TAG * 1000) / 10).replace('.', ',');
+    if(neu === 'tag')     return stdText(soll);
+    var t = zahl(tageEl.value);
+    return stdText(soll * (t && t >= 1 && t <= 7 ? t : 5));
+  }
+
+  $('modus').addEventListener('click', function(e){
+    var b = e.target && e.target.closest ? e.target.closest('button[data-modus]') : null;
+    if(!b) return;
+    var neu = b.getAttribute('data-modus');
+    if(neu === modus) return;
+    var uebertrag = wertUmrechnen(neu, tagessoll());
+    setModus(neu);
+    if(uebertrag !== null) wertEl.value = uebertrag;
+    konfettiGezeigt = false;
+    rechne();
+  });
+
+  wertEl.addEventListener('input', function(){ konfettiGezeigt = false; rechne(); });
+  tageEl.addEventListener('input', function(){ konfettiGezeigt = false; rechne(); });
+
+  var gespeichertesTheme = null, gespeichert = null, gModus = null, gWert = null, gTage = null;
+  try {
+    gespeichertesTheme = localStorage.getItem('azr-theme');
+    gespeichert = localStorage.getItem('azr-start');
+    gModus = localStorage.getItem('azr-modus');
+    gWert  = localStorage.getItem('azr-wert');
+    gTage  = localStorage.getItem('azr-tage');
+  } catch(e){}
+
+  // Beim allerersten Start der Geräteeinstellung folgen; danach gilt die Wahl.
+  var systemDunkel = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  setTheme(gespeichertesTheme || (systemDunkel ? 'dunkel' : 'hell'));
+
+  setModus(gModus === 'woche' || gModus === 'tag' ? gModus : 'prozent');
+  if(gespeichert) startEl.value = gespeichert;
+  if(gWert) wertEl.value = gWert;
+  if(gTage) tageEl.value = gTage;
+
+  rechne();
+
+  /* Sekundentakt nur, solange die App sichtbar ist – liegt das Handy in der
+     Tasche, läuft nichts im Hintergrund weiter. Beim Zurückschalten wird
+     sofort neu gerechnet, damit die Anzeige nicht nachhinkt. */
+  var takt = null;
+  function taktAn(){ if(takt === null) takt = setInterval(rechne, 1000); }
+  function taktAus(){ if(takt !== null){ clearInterval(takt); takt = null; } }
+  document.addEventListener('visibilitychange', function(){
+    if(document.hidden){ taktAus(); } else { rechne(); taktAn(); }
+  });
+  taktAn();
+
+  /* "Auf dem Startbildschirm einrichten" – der Knopf erscheint nur, wenn der
+     Browser die Einrichtung auch anbietet (also nicht, wenn die App schon
+     eingerichtet ist oder die Seite nicht über https läuft). */
+  var merker = null, einrichten = $('einrichten');
+  window.addEventListener('beforeinstallprompt', function(e){
+    e.preventDefault();
+    merker = e;
+    einrichten.hidden = false;
+  });
+  einrichten.addEventListener('click', function(){
+    if(!merker) return;
+    merker.prompt();
+    merker.userChoice.then(function(){ merker = null; einrichten.hidden = true; });
+  });
+  window.addEventListener('appinstalled', function(){ merker = null; einrichten.hidden = true; });
+
+  /* Offline-Dienst anmelden. Läuft nur über https (und beim Ausprobieren über
+     localhost); als lose Datei im Dateisystem gibt es ihn nicht – dann fehlt
+     eben nur der Offline-Start, die Rechnung geht trotzdem. */
+  if('serviceWorker' in navigator &&
+     (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')){
+    window.addEventListener('load', function(){
+      navigator.serviceWorker.register('sw.js', { scope: './' }).catch(function(){});
+    });
+  }
+})();
+</script>
+</body>
+</html>
